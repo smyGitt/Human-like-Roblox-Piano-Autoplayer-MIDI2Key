@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QSizePolicy, QScrollArea, QRadioButton)
 from PyQt6.QtCore import QObject, QThread, pyqtSignal as Signal, Qt
 from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtWidgets import QTextBrowser
 import mido
 
 from models import Note, MidiTrack
@@ -23,6 +24,12 @@ from analysis import SectionAnalyzer, FingeringEngine
 from visualizer import PianoWidget, TimelineWidget
 from player import Player
 import RobloxMidiConnect_encoder as rmc_encoder
+
+APP_NAME = "Jukebox"
+APP_VERSION = "1.0.0"
+APP_ID = "jukebox.piano.roblox"
+CONFIG_DIR_NAME = ".roblox_jukebox"
+APP_URL = "https://github.com/x15rte/Jukebox"
 
 class HotkeyManager(QObject):
     toggle_requested = Signal()
@@ -113,14 +120,14 @@ class TrackSelectionDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MIDI2Key v7.1 (Modular Refactor)")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumWidth(800)
         self.player_thread = None
         self.player = None
         self.midi_input_thread = None
         self.midi_input_worker = None
         self.midi_input_active = False
-        self.config_dir = Path.home() / ".midi2key"
+        self.config_dir = Path.home() / CONFIG_DIR_NAME
         self.config_path = self.config_dir / "config.json"
         self.config_dir.mkdir(exist_ok=True)
         self.selected_tracks_info = None 
@@ -148,6 +155,8 @@ class MainWindow(QMainWindow):
         self._load_config()
         self._live_mapper = KeyMapper(use_88_key_layout=self.use_88_key_check.isChecked())
         self.use_88_key_check.toggled.connect(self._rebuild_live_mapper)
+
+        self.add_log_message(f'{APP_NAME} v{APP_VERSION} — <a href="{APP_URL}">{APP_URL}</a>')
 
     def _setup_ui(self):
         main_widget = QWidget()
@@ -218,8 +227,8 @@ class MainWindow(QMainWindow):
         settings_layout.addStretch()
 
         # --- Log Tab ---
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
+        self.log_output = QTextBrowser()
+        self.log_output.setOpenExternalLinks(True)
         self.log_output.setFont(QFont("Courier", 9))
         log_layout = QVBoxLayout(log_tab)
         log_layout.addWidget(self.log_output)
@@ -984,7 +993,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     if sys.platform == "win32":
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("midi2key.piano.autoplayer")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
 
     app = QApplication(sys.argv)
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
