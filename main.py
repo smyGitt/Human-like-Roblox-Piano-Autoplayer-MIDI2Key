@@ -29,7 +29,11 @@ from player import Player, EventCompiler
 from output import create_backend
 
 APP_NAME = "Jukebox"
-APP_ID = "jukebox.piano.roblox"
+APP_ID = "jukebox.piano"
+APP_URL = "https://github.com/x15rte/Jukebox"
+CONFIG_DIR_NAME = ".jukebox_piano"
+CONFIG_FILENAME = "config.json"
+LOG_FILENAME = "log.txt"
 
 
 def _get_git_version() -> str:
@@ -49,8 +53,6 @@ def _get_git_version() -> str:
 
 
 APP_VERSION = _get_git_version()
-CONFIG_DIR_NAME = ".roblox_jukebox"
-APP_URL = "https://github.com/x15rte/Jukebox"
 
 
 def _parse_hotkey_string(s: str):
@@ -219,7 +221,7 @@ class MainWindow(QMainWindow):
         self.midi_input_worker = None
         self.midi_input_active = False
         self.config_dir = Path.home() / CONFIG_DIR_NAME
-        self.config_path = self.config_dir / "config.json"
+        self.config_path = self.config_dir / CONFIG_FILENAME
         self.config_dir.mkdir(exist_ok=True)
         self.selected_tracks_info = None 
         self.parsed_tempo_map = None
@@ -813,7 +815,7 @@ class MainWindow(QMainWindow):
         self.select_all_humanization_check.blockSignals(False)
 
     def _get_log_file_path(self):
-        return self.config_dir / "log.txt"
+        return self.config_dir / LOG_FILENAME
 
     def _log_message_to_plain(self, message: str) -> str:
         if not message:
