@@ -977,6 +977,22 @@ class MainWindow(QMainWindow):
             self.parsed_tempo_map = tempo_map 
             self.add_log_message(f"Tracks selected: {len(self.selected_tracks_info)}")
             self.play_button.setEnabled(True)
+
+            preview_notes = []
+            for track, role in self.selected_tracks_info:
+                for note in track.notes:
+                    n = copy.deepcopy(note)
+                    if role == "Left Hand": n.hand = 'left'
+                    elif role == "Right Hand": n.hand = 'right'
+                    else: n.hand = 'left' if n.pitch < 60 else 'right'
+                    preview_notes.append(n)
+            preview_notes.sort(key=lambda n: n.start_time)
+            self.current_notes = preview_notes
+            total_dur = max(n.end_time for n in preview_notes) if preview_notes else 1.0
+            self.total_song_duration_sec = total_dur
+            self.timeline_widget.set_data(preview_notes, total_dur, tempo_map)
+            self._update_time_label(0, total_dur)
+            self.tabs.setCurrentIndex(1)
         else:
             self.add_log_message("Track selection cancelled.")
             self.selected_tracks_info = None
@@ -1031,9 +1047,15 @@ class MainWindow(QMainWindow):
             for i, sec in enumerate(sections):
                 self.add_log_message(f"SECTION {i} [{sec.start_time:.2f}s - {sec.end_time:.2f}s] {sec.articulation_label}")
                 
+        seek_ratio = 0.0
+        if self.timeline_widget.total_duration > 0:
+            seek_ratio = self.timeline_widget.current_time / self.timeline_widget.total_duration
+
         total_dur = max(n.end_time for n in final_notes) if final_notes else 1.0
         self.timeline_widget.set_data(final_notes, total_dur, tempo_map)
         self.total_song_duration_sec = total_dur
+
+        config['start_offset'] = seek_ratio * total_dur
 
         self.set_controls_enabled(False)
         self.play_button.setEnabled(True) 
@@ -1055,7 +1077,6 @@ class MainWindow(QMainWindow):
         self.player.status_updated.connect(self.add_log_message)
         self.player.progress_updated.connect(self.update_progress)
         self.player.visualizer_updated.connect(self.piano_widget.set_pitch_active)
-        self.player.auto_paused.connect(self._on_auto_paused)
         self.player_thread.start()
 
     def handle_stop(self):
@@ -1063,6 +1084,7 @@ class MainWindow(QMainWindow):
 
     def on_playback_finished(self):
         self.add_log_message("Playback process finished.\n" + "="*50 + "\n")
+        self.piano_widget.clear()
         self.set_controls_enabled(True)
         self.stop_button.setEnabled(False)
         self.play_button.setText(f"Play ({self.hotkey_manager._format_key_string(self.hotkey_manager.current_key)})")

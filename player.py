@@ -192,10 +192,15 @@ class Player(QObject):
             if self.stop_event.is_set():
                 return
 
+            start_offset = self.config.get('start_offset', 0.0)
             self.status_updated.emit("Playing!")
-            self.start_time = time.perf_counter()
+            self.start_time = time.perf_counter() - start_offset
             self.total_paused_time = 0.0
-            self.event_index = 0
+            if start_offset > 0:
+                times = [e.time for e in self.events]
+                self.event_index = bisect.bisect_left(times, start_offset)
+            else:
+                self.event_index = 0
             self._run_loop()
         except Exception as e:
             import traceback
@@ -276,13 +281,8 @@ class Player(QObject):
 
             if self.event_index >= len(self.events):
                 if pt > self.total_duration + 0.1:
-                    self._pause_ts = now
-                    self.pause_event.set()
-                    self._pending_shutdown = True
-                    self.auto_paused.emit()
-                    self.status_updated.emit("Playback finished. Paused.")
-                    time.sleep(0.1)
-                    continue
+                    self.status_updated.emit("Playback finished.")
+                    break
                 time.sleep(0.005)
                 continue
 
