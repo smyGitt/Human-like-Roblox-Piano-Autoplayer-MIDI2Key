@@ -24,7 +24,6 @@ git pull
 ![PLayback1](images/Playback1.png)
 ![Playback2](images/Playback2.png)
 ![Visualizer](images/Visualizer.png)
-![Settings](images/Settings.png)
 ![Output](images/Output.png)
 
 
