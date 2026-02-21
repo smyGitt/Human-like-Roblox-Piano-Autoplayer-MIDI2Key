@@ -1,22 +1,27 @@
-"""Plays back a list of KeyEvents on time: keyboard keys or Roblox MIDI Connect (numpad). Pause, seek, progress and visualizer signals."""
+"""Event compilation and timed playback engine."""
 
-from PyQt6.QtCore import QObject, pyqtSignal as Signal
-from pynput import keyboard
-from pynput.keyboard import Key, Controller
 import sys
 import time
-import threading
+import copy
 import heapq
+
 import random
 import bisect
-import copy
-from typing import List, Dict, Optional, Tuple
-from models import Note, KeyEvent, MusicalSection, KeyState
+import threading
+from typing import List, Dict, Set, Optional
+
+from PyQt6.QtCore import QObject, pyqtSignal as Signal
+
+from models import Note, KeyEvent, MusicalSection
 from core import TempoMap, KeyMapper
 from analysis import Humanizer, PedalGenerator
-import RobloxMidiConnect_encoder as rmc_encoder
+from output import OutputBackend
 
-# Windows: higher timer resolution for more accurate sleep (1 ms).
+
+# ---------------------------------------------------------------------------
+# Windows high-resolution timer helpers
+# ---------------------------------------------------------------------------
+
 _winmm = None
 if sys.platform == "win32":
     try:
@@ -27,19 +32,17 @@ if sys.platform == "win32":
 
 
 def _set_timer_resolution(ms: int = 1):
-    """Request OS timer period (e.g. 1 ms) for finer sleep granularity on Windows."""
     if _winmm:
         _winmm.timeBeginPeriod(ms)
 
 
 def _restore_timer_resolution(ms: int = 1):
-    """Restore timer resolution; pair with _set_timer_resolution in finally."""
     if _winmm:
         _winmm.timeEndPeriod(ms)
 
 
 def _precise_sleep(seconds: float):
-    """Busy-wait for short delays to avoid coarse sleep() granularity; use sleep for >2 ms remainder."""
+    """Busy-wait the last ~2 ms for sub-millisecond accuracy."""
     if seconds <= 0:
         return
     deadline = time.perf_counter() + seconds
@@ -49,8 +52,111 @@ def _precise_sleep(seconds: float):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Event compiler
+# ---------------------------------------------------------------------------
+
+class EventCompiler:
+    """Compile a list of :class:`Note` objects into a time-sorted list of
+    :class:`KeyEvent` objects ready for the playback engine.
+
+    This is a stateless helper — call :meth:`compile` as a static method.
+    """
+
+    @staticmethod
+    def compile(notes: List[Note], sections: List[MusicalSection],
+                config: Dict) -> List[KeyEvent]:
+        work = copy.deepcopy(notes)
+
+        # --- optional humanization (delegates to analysis.py) ---
+        humanize_keys = ('vary_timing', 'vary_articulation',
+                         'enable_drift_correction', 'enable_chord_roll',
+                         'enable_tempo_sway')
+        if any(config.get(k) for k in humanize_keys):
+            humanizer = Humanizer(config)
+            left = [n for n in work if n.hand == 'left']
+            right = [n for n in work if n.hand == 'right']
+            resync = ({round(n.start_time, 2) for n in left}
+                      & {round(n.start_time, 2) for n in right})
+            humanizer.apply_to_hand(left, 'left', resync)
+            humanizer.apply_to_hand(right, 'right', resync)
+            work = sorted(left + right, key=lambda n: n.start_time)
+            humanizer.apply_tempo_rubato(work, sections)
+
+        # --- build press / release events ---
+        heap: list = []
+        use_mistakes = config.get('enable_mistakes', False)
+        mistake_chance = config.get('mistake_chance', 0) / 100.0
+        played_in_section: Set[int] = set()
+        cur_sec = -1
+
+        for note in work:
+            sec_idx = -1
+            for i, sec in enumerate(sections):
+                if sec.start_time <= note.start_time < sec.end_time:
+                    sec_idx = i
+                    break
+            if sec_idx != cur_sec:
+                played_in_section.clear()
+                cur_sec = sec_idx
+
+            pitch = note.pitch
+            did_mistake = False
+
+            if (use_mistakes
+                    and pitch not in played_in_section
+                    and random.random() < mistake_chance):
+                mp = EventCompiler._mistake_pitch(pitch)
+                if mp is not None:
+                    heapq.heappush(heap, KeyEvent(
+                        note.start_time, 2, 'press', '',
+                        pitch=mp, velocity=note.velocity))
+                    heapq.heappush(heap, KeyEvent(
+                        note.end_time, 4, 'release', '',
+                        pitch=mp, velocity=0))
+                    did_mistake = True
+
+            if not did_mistake:
+                heapq.heappush(heap, KeyEvent(
+                    note.start_time, 2, 'press', '',
+                    pitch=pitch, velocity=note.velocity))
+                heapq.heappush(heap, KeyEvent(
+                    note.end_time, 4, 'release', '',
+                    pitch=pitch, velocity=0))
+
+            played_in_section.add(pitch)
+
+        # --- pedal events (from analysis.py) ---
+        for pe in PedalGenerator.generate_events(config, work, sections):
+            heapq.heappush(heap, pe)
+
+        events: List[KeyEvent] = []
+        while heap:
+            events.append(heapq.heappop(heap))
+        return events
+
+    @staticmethod
+    def _mistake_pitch(original: int) -> Optional[int]:
+        if KeyMapper.is_black_key(original):
+            return original + random.choice([-2, -1, 1, 2])
+        candidates = [p for p in (original - 2, original - 1,
+                                  original + 1, original + 2)
+                      if not KeyMapper.is_black_key(p)]
+        return random.choice(candidates) if candidates else None
+
+
+# ---------------------------------------------------------------------------
+# Playback engine
+# ---------------------------------------------------------------------------
+
 class Player(QObject):
-    """Runs compiled KeyEvents: humanize notes, compile list, then cursor loop (wait to next event, batch same-time events, execute). output_mode: 'key' or 'midi_numpad' (rmc)."""
+    """Time-accurate playback engine that dispatches compiled
+    :class:`KeyEvent` objects through an :class:`OutputBackend`.
+
+    The player knows *nothing* about the concrete output method; switching
+    between keyboard and numpad mode is achieved by passing a different
+    backend instance.
+    """
 
     status_updated = Signal(str)
     progress_updated = Signal(float)
@@ -58,368 +164,181 @@ class Player(QObject):
     visualizer_updated = Signal(int, bool)
     auto_paused = Signal()
 
-    def __init__(self, config: Dict, notes: List[Note], sections: List[MusicalSection], tempo_map: TempoMap):
+    def __init__(self, compiled_events: List[KeyEvent],
+                 backend: OutputBackend, config: Dict,
+                 total_duration: float):
         super().__init__()
+        self.events = compiled_events
+        self.backend = backend
         self.config = config
-        self.output_mode = self.config.get('output_mode', 'key')
-        self.notes = notes
-        self.sections = sections
-        self.tempo_map = tempo_map
-        self.keyboard = Controller()
-        self.mapper = KeyMapper(use_88_key_layout=self.config.get('use_88_key_layout', False))
-        
-        self.compiled_events: List[KeyEvent] = []
+        self.total_duration = total_duration
+
         self.event_index = 0
-        
         self.stop_event = threading.Event()
-        self.pause_event = threading.Event() 
-        self.key_states: Dict[str, KeyState] = {}
-        self.pedal_is_down = False
-        
+        self.pause_event = threading.Event()
+
         self.start_time = 0.0
         self.total_paused_time = 0.0
-        self.last_pause_timestamp = 0.0
-        self.total_duration = 0.0
-        
-        self.debug_log: Optional[List[str]] = [] if self.config.get('debug_mode') else None
-        self.current_section_idx = -1
-    
-    def _log_debug(self, msg: str):
-        if self.debug_log is not None: 
-            self.debug_log.append(msg)
-            self.status_updated.emit(msg)
+        self._pause_ts = 0.0
+        self._pending_shutdown = False
+
+    # -- public API (called from main thread) --
 
     def play(self):
-        """Humanize notes, compile events, optional countdown, then run cursor loop until stop or end."""
+        """Entry point — run from a QThread."""
         try:
-            self._log_debug("\n=== STARTING PLAYBACK PROCESS ===")
-            humanized_notes = copy.deepcopy(self.notes)
-            self.humanizer = Humanizer(self.config, self.debug_log)
-            left_hand_notes = [n for n in humanized_notes if n.hand == 'left']
-            right_hand_notes = [n for n in humanized_notes if n.hand == 'right']
-            resync_points = {round(n.start_time, 2) for n in left_hand_notes}.intersection({round(n.start_time, 2) for n in right_hand_notes})
-            
-            self.humanizer.apply_to_hand(left_hand_notes, 'left', resync_points)
-            self.humanizer.apply_to_hand(right_hand_notes, 'right', resync_points)
-            
-            all_notes = sorted(left_hand_notes + right_hand_notes, key=lambda n: n.start_time)
-            self.humanizer.apply_tempo_rubato(all_notes, self.sections)
-            
-            self._compile_event_list(all_notes, self.sections)
-            
-            if self.config.get('countdown'): self._run_countdown()
+            if self.config.get('countdown'):
+                self._countdown()
             if self.stop_event.is_set():
-                self.playback_finished.emit()
                 return
 
             self.status_updated.emit("Playing!")
-            
             self.start_time = time.perf_counter()
             self.total_paused_time = 0.0
             self.event_index = 0
-            
-            self._run_cursor_loop()
-
+            self._run_loop()
         except Exception as e:
             import traceback
             self.status_updated.emit(f"Error: {e}\n{traceback.format_exc()}")
         finally:
-            if self.stop_event.is_set(): 
-                self.shutdown()
-                self.playback_finished.emit()
+            self.backend.shutdown()
+            self.playback_finished.emit()
 
     def stop(self):
         if not self.stop_event.is_set():
             self.status_updated.emit("Stopping playback...")
             self.stop_event.set()
             self.pause_event.clear()
-            self.shutdown()
 
     def toggle_pause(self):
         if self.pause_event.is_set():
-            if self.event_index >= len(self.compiled_events):
-                 self.seek(0.0) 
-            
-            try:
-                self.keyboard.release(Key.space)
-            except: pass
-
-            pause_duration = time.perf_counter() - self.last_pause_timestamp
-            self.total_paused_time += pause_duration
+            if self.event_index >= len(self.events):
+                self.seek(0.0)
+            pause_dur = time.perf_counter() - self._pause_ts
+            self.total_paused_time += pause_dur
             self.pause_event.clear()
             self.status_updated.emit("Resuming...")
         else:
-            self.last_pause_timestamp = time.perf_counter()
+            self._pause_ts = time.perf_counter()
             self.pause_event.set()
-            self.shutdown()
+            self._pending_shutdown = True
             self.status_updated.emit("Paused.")
 
     def seek(self, target_time: float):
-        self.shutdown() 
-        times = [e.time for e in self.compiled_events]
-        new_idx = bisect.bisect_left(times, target_time)
-        self.event_index = new_idx
-        
+        self._pending_shutdown = True
+        times = [e.time for e in self.events]
+        self.event_index = bisect.bisect_left(times, target_time)
         now = time.perf_counter()
         if self.pause_event.is_set():
             self.total_paused_time = 0.0
             self.start_time = now - target_time
-            self.last_pause_timestamp = now 
+            self._pause_ts = now
         else:
             self.start_time = now - target_time - self.total_paused_time
-            
         self.progress_updated.emit(target_time)
 
-    def _run_countdown(self):
+    # -- internal --
+
+    def _countdown(self):
         self.status_updated.emit("Get ready...")
         for i in range(3, 0, -1):
-            if self.stop_event.is_set(): return
+            if self.stop_event.is_set():
+                return
             self.status_updated.emit(f"{i}...")
             time.sleep(1)
 
-    def _compile_event_list(self, notes_to_play: List[Note], sections: List[MusicalSection]):
-        """Build sorted KeyEvents from notes (press/release) plus PedalGenerator events; optional mistakes."""
-        self.key_states.clear()
-        use_mistakes = self.config.get('enable_mistakes', False)
-        mistake_chance = self.config.get('mistake_chance', 0) / 100.0
-        
-        temp_heap = []
-        played_pitches_in_section = set()
-        current_section_idx = -1
-        
-        for note in notes_to_play:
-            note_section_idx = -1
-            for i, sec in enumerate(sections):
-                if sec.start_time <= note.start_time < sec.end_time:
-                    note_section_idx = i; break
-            
-            if note_section_idx != current_section_idx:
-                played_pitches_in_section.clear()
-                current_section_idx = note_section_idx
-
-            mistake_scheduled = False
-            is_eligible_for_mistake = note.pitch not in played_pitches_in_section
-            make_mistake = use_mistakes and is_eligible_for_mistake and (random.random() < mistake_chance)
-            
-            if make_mistake:
-                mistake_pitch = self._get_mistake_pitch(note.pitch)
-                if mistake_pitch:
-                    key_data = self.mapper.get_key_data(mistake_pitch)
-                    if key_data:
-                        mk_char = key_data['key']
-                        heapq.heappush(temp_heap, KeyEvent(note.start_time, 2, 'press', mk_char, pitch=mistake_pitch, velocity=note.velocity))
-                        heapq.heappush(temp_heap, KeyEvent(note.start_time + note.duration, 4, 'release', mk_char, pitch=mistake_pitch, velocity=0))
-                        mistake_scheduled = True
-
-            if not mistake_scheduled:
-                key_data = self.mapper.get_key_data(note.pitch)
-                if key_data:
-                    key_char = key_data['key']
-                    heapq.heappush(temp_heap, KeyEvent(note.start_time, 2, 'press', key_char, pitch=note.pitch, velocity=note.velocity))
-                    heapq.heappush(temp_heap, KeyEvent(note.end_time, 4, 'release', key_char, pitch=note.pitch, velocity=0))
-                    if key_char not in self.key_states: self.key_states[key_char] = KeyState(key_char)
-            
-            played_pitches_in_section.add(note.pitch)
-        
-        pedal_events = PedalGenerator.generate_events(self.config, notes_to_play, sections, self.debug_log)
-        for event in pedal_events: 
-            heapq.heappush(temp_heap, event)
-            
-        self.compiled_events = []
-        while temp_heap:
-            self.compiled_events.append(heapq.heappop(temp_heap))
-            
-        self.total_duration = self.compiled_events[-1].time if self.compiled_events else 0.0
-            
-    def _get_mistake_pitch(self, original_pitch: int) -> Optional[int]:
-        is_black = KeyMapper.is_black_key(original_pitch)
-        if is_black: return original_pitch + random.choice([-2, -1, 1, 2])
-        valid = [p for p in [original_pitch-2, original_pitch-1, original_pitch+1, original_pitch+2] if not KeyMapper.is_black_key(p)]
-        return random.choice(valid) if valid else None
-
-    def _run_cursor_loop(self):
-        """Raise timer resolution, then run inner loop; restore resolution in finally."""
-        self._log_debug("\n=== ENTERING CURSOR LOOP ===")
-        self.current_section_idx = -1
-        last_progress_emit = 0.0
-        progress_interval = 1.0 / 30.0   # Emit progress at ~30 Hz.
-
+    def _run_loop(self):
+        import sys
+        _old_switch = sys.getswitchinterval()
+        sys.setswitchinterval(0.0005)
         _set_timer_resolution(1)
         try:
-            self._run_cursor_loop_inner(last_progress_emit, progress_interval)
+            self._loop_body()
         finally:
             _restore_timer_resolution(1)
+            sys.setswitchinterval(_old_switch)
 
-    def _run_cursor_loop_inner(self, last_progress_emit, progress_interval):
-        """Wait until next event time, collect all events within 0.5 ms, sort by priority, execute batch; emit progress at interval."""
+    def _loop_body(self):
+        last_progress = 0.0
+        progress_iv = 1.0 / 30.0
+
         while not self.stop_event.is_set():
+            if self._pending_shutdown:
+                self._pending_shutdown = False
+                self.backend.shutdown()
+
             if self.pause_event.is_set():
                 time.sleep(0.05)
                 continue
 
             now = time.perf_counter()
-            playback_time = (now - self.start_time) - self.total_paused_time
+            pt = (now - self.start_time) - self.total_paused_time
 
-            next_sec_idx = self.current_section_idx + 1
-            if next_sec_idx < len(self.sections):
-                if playback_time >= self.sections[next_sec_idx].start_time:
-                    self.current_section_idx = next_sec_idx
-                    sec = self.sections[next_sec_idx]
-                    self._log_debug(f"\n--- SECTION {next_sec_idx} | Time: {sec.start_time:.2f}s | Style: {sec.articulation_label.upper()} ---")
-
-            if self.event_index >= len(self.compiled_events):
-                if playback_time > self.total_duration + 0.1:
-                    if not self.pause_event.is_set():
-                        self.last_pause_timestamp = now
-                        self.pause_event.set()
-                        self.shutdown()
-                        self.auto_paused.emit()
-                        self.status_updated.emit("Playback finished. Paused.")
+            if self.event_index >= len(self.events):
+                if pt > self.total_duration + 0.1:
+                    self._pause_ts = now
+                    self.pause_event.set()
+                    self._pending_shutdown = True
+                    self.auto_paused.emit()
+                    self.status_updated.emit("Playback finished. Paused.")
                     time.sleep(0.1)
                     continue
-                else:
-                    time.sleep(0.005)
-                    continue
+                time.sleep(0.005)
+                continue
 
-            next_event = self.compiled_events[self.event_index]
-            wait_time = next_event.time - playback_time
+            nxt = self.events[self.event_index]
+            wait = nxt.time - pt
 
-            if wait_time > 0:
-                _precise_sleep(wait_time)
-                now = time.perf_counter()
-                playback_time = (now - self.start_time) - self.total_paused_time
+            if wait > 0:
+                _precise_sleep(wait)
 
-            batch = []
-            while self.event_index < len(self.compiled_events):
-                e = self.compiled_events[self.event_index]
-                if e.time <= playback_time + 0.0005:
+            batch: List[KeyEvent] = []
+            batch_time = nxt.time
+            while self.event_index < len(self.events):
+                e = self.events[self.event_index]
+                if e.time <= batch_time + 0.0005:
                     batch.append(e)
                     self.event_index += 1
                 else:
                     break
 
             if batch:
-                batch.sort(key=lambda x: x.priority)
-                self._execute_chord_event(batch, playback_time)   # key or midi_numpad per output_mode
+                self._execute_batch(batch)
 
-            if now - last_progress_emit >= progress_interval:
-                self.progress_updated.emit(playback_time)
-                last_progress_emit = now
+            now = time.perf_counter()
+            pt = (now - self.start_time) - self.total_paused_time
+            if now - last_progress >= progress_iv:
+                self.progress_updated.emit(pt)
+                last_progress = now
 
-    def _get_press_info_from_event(self, event: KeyEvent) -> Tuple[List[Key], str]:
-        if event.pitch is None: return [], event.key_char
-        key_data = self.mapper.get_key_data(event.pitch)
-        if not key_data: return [], event.key_char
-        return key_data['modifiers'], key_data['key']
-        
-    def _execute_chord_event(self, events: List[KeyEvent], playback_time: float):
-        """Execute pedal then release then press for this time slice; dispatch to keyboard or rmc by output_mode."""
-        if self.stop_event.is_set(): return
-        press_events = [e for e in events if e.action == 'press']
-        release_events = [e for e in events if e.action == 'release']
-        pedal_events = [e for e in events if e.action == 'pedal']
+    def _execute_batch(self, events: List[KeyEvent]):
+        """Execute a batch of events that fall within the same time-slice.
 
-        for event in pedal_events:
-            self._log_debug(f"[ACT] {playback_time:.4f}s | PEDAL {event.key_char.upper()} (Delta: {playback_time - event.time:+.4f}s)")
-            self._handle_pedal_event(event)
-
-        for event in release_events:
-            self._log_debug(f"[ACT] {playback_time:.4f}s | RELEASE | {event.key_char} (Delta: {playback_time - event.time:+.4f}s)")
-            if event.pitch is not None:
-                self.visualizer_updated.emit(event.pitch, False)
-
-            if self.output_mode == 'midi_numpad':
-                if event.pitch is not None:
-                    rmc_encoder.send_note_message(event.pitch, velocity=0, is_note_off=True)
-                continue
-
-            key_char = event.key_char
-            state = self.key_states.get(key_char)
-            if not state: 
-                continue
-
-            base_key = key_char
-            if key_char in self.mapper.SYMBOL_MAP:
-                base_key = self.mapper.SYMBOL_MAP[key_char]
-
-            state.release()
-            try:
-                self.keyboard.release(base_key)
-                self._log_debug(f"      [PHYSICAL] Releasing Key '{base_key}'")
-            except Exception:
-                pass
-
-        for event in press_events:
-            self._log_debug(f"[ACT] {playback_time:.4f}s | PRESS   | {event.key_char} (Delta: {playback_time - event.time:+.4f}s)")
-            if event.pitch is not None:
-                self.visualizer_updated.emit(event.pitch, True)
-
-            if self.output_mode == 'midi_numpad':
-                if event.pitch is not None:
-                    rmc_encoder.send_note_message(event.pitch, velocity=event.velocity, is_note_off=False)
-                continue
-
-            state = self.key_states.get(event.key_char)
-            if not state or event.pitch is None:
-                continue
-
-            modifiers, base_key = self._get_press_info_from_event(event)
-
-            was_physically_down = state.is_physically_down
-            is_sustained_only = state.is_sustained and not state.is_active
-            state.press()
-
-            try:
-                with self.keyboard.pressed(*modifiers):
-                    if is_sustained_only:
-                        self.keyboard.release(base_key)
-                        self._log_debug(f"      [PHYSICAL] Re-striking Key '{base_key}' (Sustain)")
-                        time.sleep(0.001)
-                        self.keyboard.press(base_key)
-                    elif not was_physically_down:
-                        self.keyboard.press(base_key)
-                        self._log_debug(f"      [PHYSICAL] Pressing Key '{base_key}' with modifiers {modifiers}")
-            except Exception:
-                pass
-
-    def _handle_pedal_event(self, event: KeyEvent):
-        if self.stop_event.is_set(): return
-        if self.output_mode == 'midi_numpad':
-            value = 127 if event.key_char == 'down' else 0
-            rmc_encoder.send_pedal(value)
+        Order within a batch: pedal → release → press.
+        """
+        if self.stop_event.is_set():
             return
 
-        if event.key_char == 'down' and not self.pedal_is_down:
-            self.pedal_is_down = True
-            try:
-                self.keyboard.press(Key.space)
-                self._log_debug("      [PHYSICAL] Pressing Space (Pedal)")
-            except Exception:
-                pass
-        elif event.key_char == 'up' and self.pedal_is_down:
-            self.pedal_is_down = False
-            try:
-                self.keyboard.release(Key.space)
-                self._log_debug("      [PHYSICAL] Releasing Space (Pedal)")
-            except Exception:
-                pass
+        pedals = [e for e in events if e.action == 'pedal']
+        releases = [e for e in events if e.action == 'release']
+        presses = [e for e in events if e.action == 'press']
 
-    def shutdown(self):
-        self.status_updated.emit("Releasing all keys...")
-        for key_char, state in self.key_states.items():
-            try:
-                base_key = key_char
-                if key_char in self.mapper.SYMBOL_MAP: base_key = self.mapper.SYMBOL_MAP[key_char]
-                if state.is_active:
-                    self.keyboard.release(base_key)
-                state.release()
-            except Exception: pass
-        
-        if self.pedal_is_down:
-            try: self.keyboard.release(Key.space)
-            except Exception: pass
-            self.pedal_is_down = False
-        for key in [Key.shift, Key.ctrl, Key.alt]:
-            try: self.keyboard.release(key)
-            except Exception: pass
-        self.status_updated.emit("Shutdown complete.")
+        for e in pedals:
+            if e.key_char == 'down':
+                self.backend.pedal_on()
+            else:
+                self.backend.pedal_off()
+
+        for e in releases:
+            if self.stop_event.is_set():
+                return
+            if e.pitch is not None:
+                self.backend.note_off(e.pitch)
+                self.visualizer_updated.emit(e.pitch, False)
+
+        for e in presses:
+            if self.stop_event.is_set():
+                return
+            if e.pitch is not None:
+                self.backend.note_on(e.pitch, e.velocity)
+                self.visualizer_updated.emit(e.pitch, True)

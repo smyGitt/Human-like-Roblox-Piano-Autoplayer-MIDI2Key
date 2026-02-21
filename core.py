@@ -1,4 +1,4 @@
-"""MIDI parsing, tempo/beat mapping (TempoMap, GlobalTickMap), and pitch-to-key mapping (KeyMapper)."""
+"""MIDI parsing, tempo/beat mapping, and pitch-to-key mapping."""
 
 import mido
 import bisect
@@ -9,235 +9,266 @@ from pynput.keyboard import Key
 
 
 def get_time_groups(notes: List[Note], threshold: float = 0.015) -> List[List[Note]]:
-    """Group notes that start within threshold seconds of each other (e.g. chords)."""
-    if not notes: return []
-    groups, current_group = [], [notes[0]]
+    """Group notes whose start times are within *threshold* seconds of each other."""
+    if not notes:
+        return []
+    groups: List[List[Note]] = []
+    current = [notes[0]]
     for i in range(1, len(notes)):
-        if notes[i].start_time - current_group[0].start_time <= threshold: current_group.append(notes[i])
+        if notes[i].start_time - current[0].start_time <= threshold:
+            current.append(notes[i])
         else:
-            groups.append(current_group)
-            current_group = [notes[i]]
-    groups.append(current_group)
+            groups.append(current)
+            current = [notes[i]]
+    groups.append(current)
     return groups
 
 
-class TempoMap:
-    """Maps time (seconds) to beats and back; tempo_events are (time_sec, tempo_micro), time_signatures (time, num, den)."""
+# ---------------------------------------------------------------------------
+# Tempo / beat mapping
+# ---------------------------------------------------------------------------
 
-    def __init__(self, tempo_events: List[Tuple[float, int]], time_signatures: List[Tuple[float, int, int]]):
+class TempoMap:
+    """Bidirectional mapping between wall-clock seconds and musical beats.
+
+    *tempo_events*: ``[(time_sec, tempo_microseconds), ...]``
+    *time_signatures*: ``[(time_sec, numerator, denominator), ...]``
+    """
+
+    def __init__(self, tempo_events: List[Tuple[float, int]],
+                 time_signatures: List[Tuple[float, int, int]]):
         self.events = sorted(tempo_events, key=lambda x: x[0])
         self.time_signatures = sorted(time_signatures, key=lambda x: x[0])
-        self.beat_map = []
-        self._build_beat_map()
-        self.has_explicit_time_signatures = len(time_signatures) > 0 and not (len(time_signatures) == 1 and time_signatures[0][0] == 0 and time_signatures[0][1] == 4)
+        self._segments: List[Tuple[float, float, int]] = []
+        self._build_segments()
+        self.has_explicit_time_signatures = (
+            len(time_signatures) > 0
+            and not (len(time_signatures) == 1
+                     and time_signatures[0][0] == 0
+                     and time_signatures[0][1] == 4)
+        )
 
-    def _build_beat_map(self):
-        """Build (time_sec, beat, tempo) segments from tempo events (default 500000 µs/beat = 120 BPM)."""
-        current_beat = 0.0
-        last_time = 0.0
-        current_tempo = 500000
-
+    def _build_segments(self):
+        beat = 0.0
+        last_t = 0.0
+        tempo = 500_000
         if not self.events or self.events[0][0] > 0:
-             self.beat_map.append((0.0, 0.0, current_tempo))
-
-        for time_sec, new_tempo in self.events:
-            dt = time_sec - last_time
-            sec_per_beat = current_tempo / 1_000_000.0
-            delta_beats = dt / sec_per_beat
-            current_beat += delta_beats
-            
-            self.beat_map.append((time_sec, current_beat, new_tempo))
-            last_time = time_sec
-            current_tempo = new_tempo
+            self._segments.append((0.0, 0.0, tempo))
+        for t, new_tempo in self.events:
+            spb = tempo / 1_000_000.0
+            beat += (t - last_t) / spb
+            self._segments.append((t, beat, new_tempo))
+            last_t = t
+            tempo = new_tempo
 
     def time_to_beat(self, t: float) -> float:
-        idx = bisect.bisect_right([e[0] for e in self.beat_map], t) - 1
-        if idx < 0: return 0.0
-        
-        start_time, start_beat, tempo = self.beat_map[idx]
-        dt = t - start_time
-        sec_per_beat = tempo / 1_000_000.0
-        return start_beat + (dt / sec_per_beat)
-        
+        idx = bisect.bisect_right([s[0] for s in self._segments], t) - 1
+        if idx < 0:
+            return 0.0
+        st, sb, tempo = self._segments[idx]
+        return sb + (t - st) / (tempo / 1_000_000.0)
+
     def beat_to_time(self, b: float) -> float:
-        idx = bisect.bisect_right([e[1] for e in self.beat_map], b) - 1
-        if idx < 0: return 0.0
-        
-        start_time, start_beat, tempo = self.beat_map[idx]
-        dt_beats = b - start_beat
-        sec_per_beat = tempo / 1_000_000.0
-        return start_time + (dt_beats * sec_per_beat)
+        idx = bisect.bisect_right([s[1] for s in self._segments], b) - 1
+        if idx < 0:
+            return 0.0
+        st, sb, tempo = self._segments[idx]
+        return st + (b - sb) * (tempo / 1_000_000.0)
 
     def get_tempo_at(self, time: float) -> int:
         idx = bisect.bisect_right([e[0] for e in self.events], time) - 1
-        if idx < 0: return 500000
-        return self.events[idx][1]
+        return self.events[idx][1] if idx >= 0 else 500_000
 
     def get_measure_boundaries(self, total_duration: float) -> List[Tuple[float, float]]:
-        """Return (start_time, end_time) for each measure up to total_duration using time signatures."""
-        measures = []
-        ts_events = self.time_signatures if self.time_signatures else [(0.0, 4, 4)]
+        ts_list = self.time_signatures if self.time_signatures else [(0.0, 4, 4)]
         total_beats = self.time_to_beat(total_duration)
-        measure_start_beat = 0.0
-        
-        while measure_start_beat < total_beats:
-            measure_start_time = self.beat_to_time(measure_start_beat)
-            active_ts = ts_events[0]
-            for ts in ts_events:
-                if ts[0] <= measure_start_time + 0.001:
-                    active_ts = ts
+        measures: List[Tuple[float, float]] = []
+        beat = 0.0
+        while beat < total_beats:
+            t = self.beat_to_time(beat)
+            active = ts_list[0]
+            for ts in ts_list:
+                if ts[0] <= t + 0.001:
+                    active = ts
                 else:
                     break
-            
-            current_numerator = active_ts[1]
-            beat_len_factor = 4.0 / active_ts[2]
-            measure_len_beats = current_numerator * beat_len_factor
-            
-            measure_end_beat = measure_start_beat + measure_len_beats
-            measure_end_time = self.beat_to_time(measure_end_beat)
-            
-            measures.append((measure_start_time, measure_end_time))
-            measure_start_beat = measure_end_beat
+            measure_beats = active[1] * (4.0 / active[2])
+            end_beat = beat + measure_beats
+            measures.append((t, self.beat_to_time(end_beat)))
+            beat = end_beat
         return measures
 
 
 class GlobalTickMap:
-    """Maps MIDI ticks to seconds using merged track messages (set_tempo, time_signature)."""
+    """Converts absolute MIDI ticks to wall-clock seconds using tempo changes."""
 
     def __init__(self, midi_file: mido.MidiFile):
-        self.tick_map = []
-        self.time_signatures = [] 
         self.ticks_per_beat = midi_file.ticks_per_beat or 480
+        self._entries: List[Tuple[int, float, int]] = []
+        self.time_signatures: List[Tuple[float, int, int]] = []
+        self._build(midi_file)
+
+    def _build(self, midi_file: mido.MidiFile):
         merged = mido.merge_tracks(midi_file.tracks)
-        current_time = 0.0
-        current_tick = 0
-        current_tempo = 500000
-        self.tick_map.append((0, 0.0, current_tempo))
-        accumulated_ticks = 0
-        
+        t = 0.0
+        tick = 0
+        tempo = 500_000
+        self._entries.append((0, 0.0, tempo))
+        acc = 0
         for msg in merged:
-            accumulated_ticks += msg.time
-            delta_ticks = accumulated_ticks - current_tick
-            delta_sec = mido.tick2second(delta_ticks, self.ticks_per_beat, current_tempo)
-            current_time += delta_sec
-            current_tick = accumulated_ticks
-            
+            acc += msg.time
+            dt = mido.tick2second(acc - tick, self.ticks_per_beat, tempo)
+            t += dt
+            tick = acc
             if msg.type == 'set_tempo':
-                current_tempo = msg.tempo
-                self.tick_map.append((current_tick, current_time, current_tempo))
+                tempo = msg.tempo
+                self._entries.append((tick, t, tempo))
             elif msg.type == 'time_signature':
-                self.time_signatures.append((current_time, msg.numerator, msg.denominator))
+                self.time_signatures.append((t, msg.numerator, msg.denominator))
 
-    def tick_to_time(self, tick: int) -> float:
-        last_tick, last_time, tempo = self.tick_map[0]
-        for t_tick, t_time, t_tempo in self.tick_map:
-            if tick >= t_tick: last_tick, last_time, tempo = t_tick, t_time, t_tempo
-            else: break
-        delta_ticks = tick - last_tick
-        return last_time + mido.tick2second(delta_ticks, self.ticks_per_beat, tempo)
+    def tick_to_time(self, target_tick: int) -> float:
+        last_tick, last_time, tempo = self._entries[0]
+        for e_tick, e_time, e_tempo in self._entries:
+            if target_tick >= e_tick:
+                last_tick, last_time, tempo = e_tick, e_time, e_tempo
+            else:
+                break
+        return last_time + mido.tick2second(
+            target_tick - last_tick, self.ticks_per_beat, tempo)
 
+
+# ---------------------------------------------------------------------------
+# MIDI file parser
+# ---------------------------------------------------------------------------
 
 class MidiParser:
-    """Parse MIDI file into tracks and TempoMap; tempo_scale divides time (e.g. 2.0 = half speed)."""
+    """Parse a MIDI file into :class:`MidiTrack` objects and a :class:`TempoMap`."""
 
     @staticmethod
-    def parse_structure(filepath: str, tempo_scale: float = 1.0, debug_log: Optional[List[str]] = None) -> Tuple[List[MidiTrack], TempoMap]:
+    def parse_structure(filepath: str, tempo_scale: float = 1.0,
+                        debug_log: Optional[List[str]] = None,
+                        ) -> Tuple[List[MidiTrack], TempoMap]:
         try:
             mid = mido.MidiFile(filepath)
         except Exception as e:
             raise IOError(f"Could not read MIDI file: {e}")
-            
-        global_map = GlobalTickMap(mid)
-        tempo_map_data = [(entry[1], entry[2]) for entry in global_map.tick_map]
-        tempo_map = TempoMap(tempo_map_data, global_map.time_signatures)
-        tracks = []
-        note_id_counter = 0
-        
+
+        gmap = GlobalTickMap(mid)
+        tempo_map = TempoMap(
+            [(entry[1], entry[2]) for entry in gmap._entries],
+            gmap.time_signatures,
+        )
+
+        tracks: List[MidiTrack] = []
+        note_id = 0
+
         for i, track in enumerate(mid.tracks):
-            track_name = f"Track {i}"
-            program_change = 0
+            name = f"Track {i}"
+            program = 0
             is_drum = False
             notes: List[Note] = []
             open_notes: Dict[int, List[Dict]] = defaultdict(list)
-            current_abs_tick = 0
-            
+            abs_tick = 0
+
             for msg in track:
-                current_abs_tick += msg.time
-                if msg.type == 'track_name': track_name = msg.name
+                abs_tick += msg.time
+                if msg.type == 'track_name':
+                    name = msg.name
                 if msg.type == 'program_change':
-                    program_change = msg.program
-                    if msg.channel == 9: is_drum = True
-                
+                    program = msg.program
+                    if msg.channel == 9:
+                        is_drum = True
+
                 if msg.type == 'note_on' and msg.velocity > 0:
-                    open_notes[msg.note].append({'start_tick': current_abs_tick, 'vel': msg.velocity})
-                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    open_notes[msg.note].append(
+                        {'tick': abs_tick, 'vel': msg.velocity})
+                elif (msg.type == 'note_off'
+                      or (msg.type == 'note_on' and msg.velocity == 0)):
                     if open_notes[msg.note]:
-                        note_data = open_notes[msg.note].pop(0)
-                        start_sec = global_map.tick_to_time(note_data['start_tick'])
-                        end_sec = global_map.tick_to_time(current_abs_tick)
-                        duration = end_sec - start_sec
-                        if duration > 0.01:
-                            scaled_start = start_sec / tempo_scale
-                            scaled_duration = duration / tempo_scale
-                            notes.append(Note(note_id_counter, msg.note, note_data['vel'], scaled_start, scaled_duration, 'unknown', i, msg.channel))
-                            note_id_counter += 1
-            if any(n.channel == 9 for n in notes): is_drum = True
+                        nd = open_notes[msg.note].pop(0)
+                        s = gmap.tick_to_time(nd['tick'])
+                        e = gmap.tick_to_time(abs_tick)
+                        dur = e - s
+                        if dur > 0.01:
+                            notes.append(Note(
+                                note_id, msg.note, nd['vel'],
+                                s / tempo_scale, dur / tempo_scale,
+                                'unknown', i, msg.channel,
+                            ))
+                            note_id += 1
+
+            if any(n.channel == 9 for n in notes):
+                is_drum = True
             if notes:
                 notes.sort(key=lambda n: n.start_time)
-                tracks.append(MidiTrack(i, track_name, program_change, is_drum, notes))
+                tracks.append(MidiTrack(i, name, program, is_drum, notes))
+
         return tracks, tempo_map
 
 
+# ---------------------------------------------------------------------------
+# Key mapping  (game-defined tables — DO NOT CHANGE the mapping constants)
+# ---------------------------------------------------------------------------
+
 class KeyMapper:
-    """Maps MIDI pitch to keyboard key (with modifiers). 88-key layout uses extra Ctrl ranges; 61-key is middle only."""
-    SYMBOL_MAP = {'!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0'}
-    LEFT_CTRL_KEYS = "1234567890qwert"   # Low octaves (Ctrl+key) for 88-key
+    """Map a MIDI pitch to the Roblox piano keyboard key + modifier combination.
+
+    The mapping tables below are defined by the game client and **must not** be
+    altered; doing so will cause the game to misinterpret input.
+    """
+
+    SYMBOL_MAP = {
+        '!': '1', '@': '2', '#': '3', '$': '4', '%': '5',
+        '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
+    }
+
+    # --- game-defined key tables ---
+    LEFT_CTRL_KEYS = "1234567890qwert"
     MIDDLE_WHITE_KEYS = "1234567890qwertyuiopasdfghjklzxcvbnm"
-    RIGHT_CTRL_KEYS = "yuiopasdfghj"     # High octaves (Ctrl+key) for 88-key
-    PITCH_START_LEFT = 21   # A0
-    PITCH_START_MIDDLE = 36 # C2
-    PITCH_START_RIGHT = 97  # High range for 88-key
+    RIGHT_CTRL_KEYS = "yuiopasdfghj"
+
+    PITCH_START_LEFT = 21    # A0
+    PITCH_START_MIDDLE = 36  # C2
+    PITCH_START_RIGHT = 97   # high range (88-key)
 
     def __init__(self, use_88_key_layout: bool = False):
         self.use_88_key_layout = use_88_key_layout
-        self.key_map = {}
-        if self.use_88_key_layout:
-            self.min_pitch = 21; self.max_pitch = 108 
-        else:
-            self.min_pitch = 36; self.max_pitch = 96  
-        self.init_key_map()
+        self.min_pitch = 21 if use_88_key_layout else 36
+        self.max_pitch = 108 if use_88_key_layout else 96
+        self.key_map: Dict[int, Dict] = {}
+        self._build()
 
-    def init_key_map(self):
+    def _build(self):
         if self.use_88_key_layout:
-            current_pitch = self.PITCH_START_LEFT
-            for char in self.LEFT_CTRL_KEYS:
-                self.key_map[current_pitch] = {'key': char, 'modifiers': [Key.ctrl]}
-                current_pitch += 1
-            current_pitch = self.PITCH_START_RIGHT
-            for char in self.RIGHT_CTRL_KEYS:
-                self.key_map[current_pitch] = {'key': char, 'modifiers': [Key.ctrl]}
-                current_pitch += 1
+            p = self.PITCH_START_LEFT
+            for ch in self.LEFT_CTRL_KEYS:
+                self.key_map[p] = {'key': ch, 'modifiers': [Key.ctrl]}
+                p += 1
+            p = self.PITCH_START_RIGHT
+            for ch in self.RIGHT_CTRL_KEYS:
+                self.key_map[p] = {'key': ch, 'modifiers': [Key.ctrl]}
+                p += 1
 
-        white_key_index = 0
-        current_pitch = self.PITCH_START_MIDDLE
-        while current_pitch <= 108 and white_key_index < len(self.MIDDLE_WHITE_KEYS):
-            base_char = self.MIDDLE_WHITE_KEYS[white_key_index]
-            if current_pitch not in self.key_map:
-                self.key_map[current_pitch] = {'key': base_char, 'modifiers': []}
-            next_pitch = current_pitch + 1
-            if self.is_black_key(next_pitch):
-                if next_pitch not in self.key_map:
-                    self.key_map[next_pitch] = {'key': base_char, 'modifiers': [Key.shift]}
-                current_pitch += 2
+        wi = 0
+        p = self.PITCH_START_MIDDLE
+        while p <= 108 and wi < len(self.MIDDLE_WHITE_KEYS):
+            ch = self.MIDDLE_WHITE_KEYS[wi]
+            if p not in self.key_map:
+                self.key_map[p] = {'key': ch, 'modifiers': []}
+            nxt = p + 1
+            if self.is_black_key(nxt):
+                if nxt not in self.key_map:
+                    self.key_map[nxt] = {'key': ch, 'modifiers': [Key.shift]}
+                p += 2
             else:
-                current_pitch += 1
-            white_key_index += 1
+                p += 1
+            wi += 1
 
     def get_key_data(self, pitch: int) -> Optional[Dict]:
-        if pitch < self.min_pitch:
-            while pitch < self.min_pitch: pitch += 12
-        elif pitch > self.max_pitch:
-            while pitch > self.max_pitch: pitch -= 12
+        while pitch < self.min_pitch:
+            pitch += 12
+        while pitch > self.max_pitch:
+            pitch -= 12
         return self.key_map.get(pitch)
 
     def get_key_for_pitch(self, pitch: int) -> Optional[str]:
@@ -247,13 +278,17 @@ class KeyMapper:
     @staticmethod
     def is_black_key(pitch: int) -> bool:
         return (pitch % 12) in {1, 3, 6, 8, 10}
-    
+
     @staticmethod
     def pitch_to_name(pitch: int) -> str:
-        names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        names = ["C", "C#", "D", "D#", "E", "F",
+                 "F#", "G", "G#", "A", "A#", "B"]
         return f"{names[pitch % 12]}{(pitch // 12) - 1}"
-    
+
     @property
-    def lower_ctrl_bound(self): return 0 
+    def lower_ctrl_bound(self):
+        return 0
+
     @property
-    def upper_ctrl_bound(self): return 128
+    def upper_ctrl_bound(self):
+        return 128

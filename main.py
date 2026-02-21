@@ -22,11 +22,11 @@ from PyQt6.QtWidgets import QTextBrowser
 import mido
 
 from models import Note, MidiTrack
-from core import MidiParser, KeyMapper
+from core import MidiParser
 from analysis import SectionAnalyzer, FingeringEngine
 from visualizer import PianoWidget, TimelineWidget
-from player import Player
-import RobloxMidiConnect_encoder as rmc_encoder
+from player import Player, EventCompiler
+from output import create_backend
 
 APP_NAME = "Jukebox"
 APP_ID = "jukebox.piano.roblox"
@@ -157,6 +157,55 @@ class TrackSelectionDialog(QDialog):
                 result.append((track, role))
         return result
 
+class MidiInputWorker(QObject):
+    """Reads MIDI messages from a hardware input port on a background thread."""
+    message_received = Signal(object)
+    connected = Signal()
+    connection_error = Signal(str)
+    finished = Signal()
+
+    def __init__(self, port):
+        super().__init__()
+        self._port = port
+        self._inport = None
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
+        port = self._inport
+        if port is not None:
+            try:
+                port.close()
+            except Exception:
+                pass
+
+    def run(self):
+        try:
+            self._inport = mido.open_input(self._port)
+        except Exception as e:
+            self.connection_error.emit(str(e))
+            self.finished.emit()
+            return
+        self.connected.emit()
+        try:
+            while not self._stop_event.is_set():
+                for msg in self._inport.iter_pending():
+                    if self._stop_event.is_set():
+                        break
+                    self.message_received.emit(msg)
+                self._stop_event.wait(0.005)
+        except Exception:
+            pass
+        finally:
+            if self._inport is not None:
+                try:
+                    self._inport.close()
+                except Exception:
+                    pass
+                self._inport = None
+        self.finished.emit()
+
+
 class MainWindow(QMainWindow):
     """Tabs: Playback (file, tracks, humanization), Visualizer (timeline + piano), Settings (hotkey, overlay), Output (log). Saves/loads config.json; optional log to file."""
 
@@ -189,14 +238,11 @@ class MainWindow(QMainWindow):
         }
         self.pedal_mapping_inv = {v: k for k, v in self.pedal_mapping.items()}
 
-        self.live_keyboard = keyboard.Controller()
-        self._live_pressed_keys = set()
-        self._live_pedal_down = False
+        self.live_backend = None
 
         self._setup_ui()
         self._load_config()
-        self._live_mapper = KeyMapper(use_88_key_layout=self.use_88_key_check.isChecked())
-        self.use_88_key_check.toggled.connect(self._rebuild_live_mapper)
+        self.use_88_key_check.toggled.connect(self._on_key_layout_changed)
 
         ver_tag = f" ({APP_VERSION})" if APP_VERSION else ""
         self.add_log_message(f'{APP_NAME}{ver_tag} — <a href="{APP_URL}">{APP_URL}</a>')
@@ -518,52 +564,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Device", "No MIDI input device selected.")
             return
 
-        class MidiInputWorker(QObject):
-            message_received = Signal(object)
-            connected = Signal()
-            connection_error = Signal(str)
-            finished = Signal()
-
-            def __init__(self, port):
-                super().__init__()
-                self._port = port
-                self._inport = None
-                self._stop_event = threading.Event()
-
-            def stop(self):
-                self._stop_event.set()
-                port = self._inport
-                if port is not None:
-                    try:
-                        port.close()
-                    except Exception:
-                        pass
-
-            def run(self):
-                try:
-                    self._inport = mido.open_input(self._port)
-                except Exception as e:
-                    self.connection_error.emit(str(e))
-                    self.finished.emit()
-                    return
-                self.connected.emit()
-                try:
-                    while not self._stop_event.is_set():
-                        for msg in self._inport.iter_pending():
-                            if self._stop_event.is_set():
-                                break
-                            self.message_received.emit(msg)
-                        self._stop_event.wait(0.005)
-                except Exception:
-                    pass
-                finally:
-                    if self._inport is not None:
-                        try:
-                            self._inport.close()
-                        except Exception:
-                            pass
-                        self._inport = None
-                self.finished.emit()
+        self.live_backend = create_backend(
+            self._current_output_mode(),
+            self.use_88_key_check.isChecked())
 
         self.midi_input_thread = QThread()
         self.midi_input_worker = MidiInputWorker(port_name)
@@ -591,18 +594,8 @@ class MainWindow(QMainWindow):
                              f"Failed to open MIDI input device:\n{error_msg}")
 
     def _release_all_live_keys(self):
-        for key in list(self._live_pressed_keys):
-            try:
-                self.live_keyboard.release(key)
-            except Exception:
-                pass
-        self._live_pressed_keys.clear()
-        if self._live_pedal_down:
-            try:
-                self.live_keyboard.release(Key.space)
-            except Exception:
-                pass
-            self._live_pedal_down = False
+        if self.live_backend:
+            self.live_backend.shutdown()
 
     def _disconnect_midi_input(self):
         if not self.midi_input_active:
@@ -634,60 +627,45 @@ class MainWindow(QMainWindow):
         return "key"
 
     def _on_output_mode_changed(self):
-        self._release_all_live_keys()
+        if self.live_backend and self.midi_input_active:
+            self.live_backend.shutdown()
+            self.live_backend = create_backend(
+                self._current_output_mode(),
+                self.use_88_key_check.isChecked())
 
-    def _rebuild_live_mapper(self, checked: bool):
-        self._live_mapper = KeyMapper(use_88_key_layout=checked)
+    def _on_key_layout_changed(self, _checked: bool = False):
+        if self.live_backend and self.midi_input_active:
+            self.live_backend.shutdown()
+            self.live_backend = create_backend(
+                self._current_output_mode(),
+                self.use_88_key_check.isChecked())
 
     def _handle_live_midi_message(self, msg):
-        mode = self._current_output_mode()
-
-        if mode == "midi_numpad":
-            rmc_encoder.process_mido_message(msg)
+        if not self.live_backend:
             return
 
         msg_type = getattr(msg, "type", None)
-        if msg_type not in ("note_on", "note_off", "control_change"):
-            return
 
         if msg_type in ("note_on", "note_off"):
             note = getattr(msg, "note", None)
             velocity = getattr(msg, "velocity", 0)
             if note is None:
                 return
-
-            is_off = msg_type == "note_off" or (msg_type == "note_on" and velocity == 0)
-            key_data = self._live_mapper.get_key_data(note)
-            if not key_data:
-                return
-
-            base_key = key_data["key"]
-            modifiers = key_data["modifiers"]
-            try:
-                if is_off:
-                    self.live_keyboard.release(base_key)
-                    self._live_pressed_keys.discard(base_key)
-                else:
-                    with self.live_keyboard.pressed(*modifiers):
-                        self.live_keyboard.press(base_key)
-                    self._live_pressed_keys.add(base_key)
-            except Exception:
-                pass
+            is_off = (msg_type == "note_off"
+                      or (msg_type == "note_on" and velocity == 0))
+            if is_off:
+                self.live_backend.note_off(note)
+            else:
+                self.live_backend.note_on(note, velocity)
             return
 
-        if msg_type == "control_change":
-            control = getattr(msg, "control", None)
+        if (msg_type == "control_change"
+                and getattr(msg, "control", None) == 64):
             value = getattr(msg, "value", 0)
-            if control == 64:
-                try:
-                    if value >= 64:
-                        self.live_keyboard.press(Key.space)
-                        self._live_pedal_down = True
-                    else:
-                        self.live_keyboard.release(Key.space)
-                        self._live_pedal_down = False
-                except Exception:
-                    pass
+            if value >= 64:
+                self.live_backend.pedal_on()
+            else:
+                self.live_backend.pedal_off()
 
     def _create_playback_group(self):
         group = QGroupBox("Playback")
@@ -1065,8 +1043,12 @@ class MainWindow(QMainWindow):
         
         self.tabs.setCurrentIndex(1)
         
+        backend = create_backend(config['output_mode'],
+                                 config.get('use_88_key_layout', False))
+        compiled_events = EventCompiler.compile(final_notes, sections, config)
+
         self.player_thread = QThread()
-        self.player = Player(config, final_notes, sections, tempo_map)
+        self.player = Player(compiled_events, backend, config, total_dur)
         self.player.moveToThread(self.player_thread)
         self.player_thread.started.connect(self.player.play)
         self.player.playback_finished.connect(self.on_playback_finished)
@@ -1094,7 +1076,8 @@ class MainWindow(QMainWindow):
         self._save_config()
         if self.midi_input_active:
             self._disconnect_midi_input()
-        self._release_all_live_keys()
+        if self.live_backend:
+            self.live_backend.shutdown()
         if self.player and self.player_thread and self.player_thread.isRunning():
             self.player.stop()
             self.player_thread.wait(1000)
