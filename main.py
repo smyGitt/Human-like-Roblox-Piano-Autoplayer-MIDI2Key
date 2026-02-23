@@ -331,7 +331,10 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.stop_button)
         button_layout.addWidget(self.reset_button)
         button_layout.addStretch()
-        
+        self.current_file_bottom_label = QLabel("No file selected.")
+        self.current_file_bottom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        button_layout.addWidget(self.current_file_bottom_label)
+
         main_layout.addLayout(media_layout)
         main_layout.addLayout(button_layout)
         
@@ -995,6 +998,7 @@ class MainWindow(QMainWindow):
         if filepath:
             self.file_path_label.setText(os.path.basename(filepath))
             self.file_path_label.setToolTip(filepath)
+            self.current_file_bottom_label.setText(os.path.basename(filepath))
             self.add_log_message(f"Selected file: {filepath}")
             self._parse_and_select_tracks(filepath)
 
@@ -1034,6 +1038,7 @@ class MainWindow(QMainWindow):
         else:
             self.add_log_message("Track selection cancelled.")
             self.selected_tracks_info = None
+            self.current_file_bottom_label.setText("No file selected.")
             self.play_button.setEnabled(False)
             self.reset_button.setEnabled(False)
 
