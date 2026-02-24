@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI2Key - The Ultimate Roblox Piano Autoplayer</title>
+    <meta name="description" content="Play complex songs on Roblox piano effortlessly with human-like timing.">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        /* Custom accent color gradient */
+        .accent-gradient {
+            background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .btn-gradient {
+            background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%);
+        }
+        .btn-gradient:hover {
+            background: linear-gradient(90deg, #4f46e5 0%, #9333ea 100%);
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 antialiased leading-relaxed">
+
+    <nav class="flex items-center justify-between flex-wrap bg-gray-800/50 backdrop-blur-md p-6 fixed w-full z-10 top-0 border-b border-gray-700">
+        <div class="flex items-center flex-shrink-0 text-white mr-6">
+            <span class="font-bold text-xl tracking-tight accent-gradient">MIDI2Key</span>
+        </div>
+        <div class="block lg:hidden">
+            <button class="flex items-center px-3 py-2 border rounded text-indigo-200 border-indigo-400 hover:text-white hover:border-white">
+                <svg class="fill-current h-3 w-3" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><title>Menu</title><path d="M0 3h20v2H0V3zm0 6h20v2H0V9zm0 6h20v2H0v-2z"/></svg>
+            </button>
+        </div>
+        <div class="w-full block flex-grow lg:flex lg:items-center lg:w-auto hidden lg:block pt-6 lg:pt-0" id="nav-content">
+            <div class="text-sm lg:flex-grow">
+                <a href="#features" class="block mt-4 lg:inline-block lg:mt-0 text-indigo-200 hover:text-white mr-4">
+                    Features
+                </a>
+                <a href="#how-it-works" class="block mt-4 lg:inline-block lg:mt-0 text-indigo-200 hover:text-white mr-4">
+                    How It Works
+                </a>
+            </div>
+            <div>
+                <a href="https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key/releases" class="inline-block text-sm px-4 py-2 leading-none border rounded text-white border-white hover:border-transparent hover:text-gray-900 hover:bg-white mt-4 lg:mt-0 transition duration-300">
+                    Download Now
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <section class="pt-32 pb-20 px-6 md:px-12">
+        <div class="container mx-auto flex flex-col-reverse md:flex-row items-center">
+            <div class="flex flex-col w-full md:w-1/2 justify-center items-start text-center md:text-left">
+                <h1 class="my-4 text-5xl font-bold leading-tight">
+                    Play Roblox Piano like a Pro, <span class="accent-gradient">Effortlessly.</span>
+                </h1>
+                <p class="leading-normal text-2xl mb-8 text-gray-300">
+                    The ultimate tool to turn MIDI files into human-like piano performances in Roblox. Impress everyone without breaking a sweat.
+                </button>
+                <a href="https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key/releases" class="btn-gradient mx-auto lg:mx-0 hover:underline text-white font-bold rounded-full my-6 py-4 px-8 shadow-lg focus:outline-none focus:shadow-outline transform transition duration-300 ease-in-out">
+                    Get the App &nbsp; 🚀
+                </a>
+            </div>
+            <div class="w-full md:w-1/2 py-6 text-center">
+                <img class="w-full md:w-4/5 z-50 rounded-lg shadow-2xl border-2 border-indigo-500/50 mx-auto" src="https://placehold.co/600x400/1e1e2e/FFF?text=MIDI2Key+Screenshot" alt="MIDI2Key Application Interface">
+            </div>
+        </div>
+    </section>
+
+    <section id="features" class="bg-gray-800 py-20">
+        <div class="container mx-auto px-6">
+            <h2 class="w-full my-2 text-4xl font-bold leading-tight text-center text-white">
+                Why Use MIDI2Key?
+            </h2>
+            <div class="w-full mb-4">
+                <div class="h-1 mx-auto gradient w-64 opacity-25 my-0 py-0 rounded-t accent-gradient"></div>
+            </div>
+            <div class="flex flex-wrap">
+                <div class="w-full md:w-1/3 p-6 flex flex-col flex-grow flex-shrink">
+                    <div class="flex-1 bg-gray-900 rounded-t rounded-b-none overflow-hidden shadow p-6 border-t-4 border-indigo-500">
+                        <div class="w-full font-bold text-xl text-indigo-400 px-6">Human-like Playing</div>
+                        <p class="text-gray-300 text-base px-6 mb-5">
+                            Other autoplayers sound robotic. Ours adds tiny, natural delays so your performance sounds real.
+                        </p>
+                    </div>
+                </div>
+                <div class="w-full md:w-1/3 p-6 flex flex-col flex-grow flex-shrink">
+                    <div class="flex-1 bg-gray-900 rounded-t rounded-b-none overflow-hidden shadow p-6 border-t-4 border-purple-500">
+                        <div class="w-full font-bold text-xl text-purple-400 px-6">Visualizer Included</div>
+                        <p class="text-gray-300 text-base px-6 mb-5">
+                            See the notes hit the keys in real-time right inside the app window while it plays.
+                        </p>
+                    </div>
+                </div>
+                <div class="w-full md:w-1/3 p-6 flex flex-col flex-grow flex-shrink">
+                    <div class="flex-1 bg-gray-900 rounded-t rounded-b-none overflow-hidden shadow p-6 border-t-4 border-pink-500">
+                        <div class="w-full font-bold text-xl text-pink-400 px-6">Easy Setup</div>
+                        <p class="text-gray-300 text-base px-6 mb-5">
+                            No complicated scripts. Just load your .mid file, align your Roblox window, and press Play.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <section id="how-it-works" class="py-20 px-6">
+        <div class="container mx-auto">
+            <h2 class="w-full my-2 text-4xl font-bold leading-tight text-center text-white">
+                How to Level Up Your Piano Skills
+            </h2>
+            <div class="flex flex-wrap mt-12 justify-center">
+                 <div class="w-full md:w-1/4 p-4 text-center">
+                    <div class="w-16 h-16 mx-auto btn-gradient rounded-full flex items-center justify-center text-2xl font-bold mb-4">1</div>
+                    <h3 class="font-bold text-xl mb-2">Download It</h3>
+                    <p class="text-gray-400">Grab the latest .exe version from the Releases page on GitHub.</p>
+                </div>
+                 <div class="w-full md:w-1/4 p-4 text-center">
+                    <div class="w-16 h-16 mx-auto btn-gradient rounded-full flex items-center justify-center text-2xl font-bold mb-4">2</div>
+                    <h3 class="font-bold text-xl mb-2">Get a MIDI</h3>
+                    <p class="text-gray-400">Find a `.mid` file of your favorite song online.</p>
+                </div>
+                <div class="w-full md:w-1/4 p-4 text-center">
+                    <div class="w-16 h-16 mx-auto btn-gradient rounded-full flex items-center justify-center text-2xl font-bold mb-4">3</div>
+                    <h3 class="font-bold text-xl mb-2">Load & Play</h3>
+                    <p class="text-gray-400">Open the app, load the file, get on a Roblox piano, and hit Play!</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="bg-gray-900 border-t border-gray-800 text-center md:text-left">
+        <div class="container mx-auto px-6 pt-10 pb-6">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="text-center md:text-left mb-6 md:mb-0">
+                    <span class="font-bold text-xl accent-gradient">MIDI2Key</span>
+                    <p class="text-sm mt-2 text-gray-500">Created by <a href="https://github.com/smyGitt" class="text-indigo-400 hover:underline">smyGitt</a></p>
+                </div>
+                 <div class="flex flex-col md:flex-row text-center md:text-right text-sm text-gray-500">
+                    <a href="https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key" class="px-4 py-2 hover:text-indigo-400">View GitHub Repo</a>
+                    <a href="https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key/issues" class="px-4 py-2 hover:text-indigo-400">Report a Bug</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    
+    <script>
+    //Simple script to toggle menu on small screens
+    document.querySelector('button').addEventListener('click', function(){
+        document.getElementById('nav-content').classList.toggle('hidden');
+    });
+    </script>
+
+</body>
+</html>
