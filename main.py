@@ -13,13 +13,18 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QTableWidgetItem, QHeaderView, QAbstractItemView, QDialogButtonBox, 
                              QSizePolicy, QScrollArea)
 from PyQt6.QtCore import QObject, QThread, pyqtSignal as Signal, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 from models import Note, MidiTrack
 from core import MidiParser
 from analysis import SectionAnalyzer, FingeringEngine
 from visualizer import PianoWidget, TimelineWidget
 from player import Player
+
+def get_resource_path(relative_path: str) -> str:
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 class HotkeyManager(QObject):
     toggle_requested = Signal()
@@ -112,6 +117,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MIDI2Key v1.3")
         self.setMinimumWidth(550)
+        self.setMinimumHeight(683)
+        self.setWindowIcon(QIcon(get_resource_path("icon.ico")))
         self.player_thread = None
         self.player = None
         self.config_dir = Path.home() / ".midi2key"
@@ -239,6 +246,15 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(media_layout)
         main_layout.addLayout(button_layout)
         
+        # --- GitHub Link Integration ---
+        github_layout = QHBoxLayout()
+        github_label = QLabel('<a href="https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key"><span style="color: gray; text-decoration: underline;">by smyGitt on GitHub</span></a>')
+        github_label.setOpenExternalLinks(True)
+        github_layout.addStretch()
+        github_layout.addWidget(github_label)
+        main_layout.addLayout(github_layout)
+        # -------------------------------
+
         self._update_play_stop_labels()
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
@@ -248,6 +264,7 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self._reset_controls_to_default)
         self.play_button.setEnabled(False) 
         self.stop_button.setEnabled(False)
+        
 
     # --- Methods ---
     def _toggle_always_on_top(self, checked):
