@@ -110,8 +110,8 @@ class TrackSelectionDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MIDI2Key v7.1 (Modular Refactor)")
-        self.setMinimumWidth(800)
+        self.setWindowTitle("MIDI2Key v1.3")
+        self.setMinimumWidth(550)
         self.player_thread = None
         self.player = None
         self.config_dir = Path.home() / ".midi2key"

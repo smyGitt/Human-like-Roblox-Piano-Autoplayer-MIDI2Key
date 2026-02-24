@@ -228,8 +228,10 @@ class PedalGenerator:
             if not bass_notes:
                 treble_notes = [n for n in final_notes if n.hand == 'right']
                 treble_notes.sort(key=lambda n: n.start_time)
-                return PedalGenerator._generate_adaptive_pedal_driver(treble_notes)
-            return PedalGenerator._generate_adaptive_pedal_driver(bass_notes)
+                # Pass both the driver notes and the total track notes
+                return PedalGenerator._generate_adaptive_pedal_driver(treble_notes, final_notes)
+            # Pass both the driver notes and the total track notes
+            return PedalGenerator._generate_adaptive_pedal_driver(bass_notes, final_notes)
             
         for section in sections:
             lh_notes = [n for n in section.notes if n.hand == 'left']
@@ -253,13 +255,13 @@ class PedalGenerator:
         return events
 
     @staticmethod
-    def _generate_adaptive_pedal_driver(driver_notes: List[Note]) -> List[KeyEvent]:
+    def _generate_adaptive_pedal_driver(driver_notes: List[Note], all_notes: List[Note]) -> List[KeyEvent]:
         events = []
         if not driver_notes: return events
         
         PEDAL_LAG = 0.05 
-        SAFE_INTERVALS = {0, 3, 4, 5, 7} # Unison, m3, M3, P4, P5, Octave(0)
-        UNSAFE_INTERVALS = {1, 6} # m2, Tritone
+        SAFE_INTERVALS = {0, 3, 4, 5, 7} # Unison, minor 3rd, Major 3rd, Perfect 4th, Perfect 5th, Octave
+        UNSAFE_INTERVALS = {1, 6} # minor 2nd, Tritone
 
         for i in range(len(driver_notes)):
             curr = driver_notes[i]
@@ -279,15 +281,26 @@ class PedalGenerator:
             else:
                 should_repedal = False
                 
-                # Harmonic Interval Check
                 if next_n:
-                    interval = abs(next_n.pitch - curr.pitch) % 12
-                    if interval in SAFE_INTERVALS:
-                        should_repedal = False # Lush/Consonant
-                    elif interval in UNSAFE_INTERVALS:
-                        should_repedal = True # Clash/Dissonant
-                    else:
-                        should_repedal = False # Gray area -> Assume Safe
+                    # 1. Linear Harmonic Check
+                    linear_interval = abs(next_n.pitch - curr.pitch) % 12
+                    if linear_interval in UNSAFE_INTERVALS:
+                        should_repedal = True
+                    
+                    # 2. Vertical Harmonic Check
+                    if not should_repedal:
+                        # Isolate all notes occurring within a 0.05s window of the next driver note
+                        concurrent_notes = [n for n in all_notes if abs(n.start_time - next_n.start_time) <= 0.05]
+                        if concurrent_notes:
+                            # Establish the harmonic root for this specific timestamp
+                            lowest_pitch = min(n.pitch for n in concurrent_notes)
+                            
+                            # Evaluate each concurrent note against the local root
+                            for n in concurrent_notes:
+                                vertical_interval = abs(n.pitch - lowest_pitch) % 12
+                                if vertical_interval in UNSAFE_INTERVALS:
+                                    should_repedal = True
+                                    break # Exit early upon first detected dissonance
                 
                 if should_repedal and next_n:
                     events.append(KeyEvent(next_n.start_time, 0, 'pedal', 'up'))

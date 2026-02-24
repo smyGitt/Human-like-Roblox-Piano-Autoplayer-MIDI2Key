@@ -1,0 +1,6 @@
+__pycache__/
+build/
+dist/
+midi/
+build.spec
+MIDI2Key.spec
