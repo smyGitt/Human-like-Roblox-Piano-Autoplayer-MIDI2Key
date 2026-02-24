@@ -16,7 +16,7 @@ class Player(QObject):
     status_updated = Signal(str)
     progress_updated = Signal(float)
     playback_finished = Signal()
-    visualizer_updated = Signal(int, bool)
+    visualizer_updated = Signal(list)
     auto_paused = Signal()
 
     def __init__(self, config: Dict, notes: List[Note], sections: List[MusicalSection], tempo_map: TempoMap):
@@ -34,12 +34,17 @@ class Player(QObject):
         self.stop_event = threading.Event()
         self.pause_event = threading.Event() 
         self.key_states: Dict[str, KeyState] = {}
+        self.active_pitches: set = set()
         self.pedal_is_down = False
         
         self.start_time = 0.0
         self.total_paused_time = 0.0
         self.last_pause_timestamp = 0.0
         self.total_duration = 0.0
+        
+        # Throttling variables for UI updates (60 FPS)
+        self.last_progress_emit_time = 0.0
+        self.progress_update_interval = 1.0 / 60.0
         
         self.debug_log: Optional[List[str]] = [] if self.config.get('debug_mode') else None
         self.current_section_idx = -1
@@ -76,6 +81,7 @@ class Player(QObject):
             self.start_time = time.perf_counter()
             self.total_paused_time = 0.0
             self.event_index = 0
+            self.last_progress_emit_time = self.start_time
             
             self._run_cursor_loop()
 
@@ -127,6 +133,7 @@ class Player(QObject):
         else:
             self.start_time = now - target_time - self.total_paused_time
             
+        self.last_progress_emit_time = now
         self.progress_updated.emit(target_time)
 
     def _run_countdown(self):
@@ -245,7 +252,10 @@ class Player(QObject):
             else:
                 time.sleep(0.001)
 
-            self.progress_updated.emit(playback_time)
+            # Throttle UI progress updates to ~60 FPS
+            if now - self.last_progress_emit_time >= self.progress_update_interval:
+                self.progress_updated.emit(playback_time)
+                self.last_progress_emit_time = now
 
     def _get_press_info_from_event(self, event: KeyEvent) -> Tuple[List[Key], str]:
         if event.pitch is None: return [], event.key_char
@@ -259,6 +269,8 @@ class Player(QObject):
         release_events = [e for e in events if e.action == 'release']
         pedal_events = [e for e in events if e.action == 'pedal']
 
+        state_changed = False 
+
         for event in pedal_events: 
             self._log_debug(f"[ACT] {playback_time:.4f}s | PEDAL {event.key_char.upper()} (Delta: {playback_time - event.time:+.4f}s)")
             self._handle_pedal_event(event)
@@ -266,7 +278,8 @@ class Player(QObject):
         for event in release_events:
             self._log_debug(f"[ACT] {playback_time:.4f}s | RELEASE | {event.key_char} (Delta: {playback_time - event.time:+.4f}s)")
             if event.pitch is not None:
-                self.visualizer_updated.emit(event.pitch, False)
+                self.active_pitches.discard(event.pitch)
+                state_changed = True
                 
             key_char = event.key_char
             state = self.key_states.get(key_char)
@@ -284,7 +297,8 @@ class Player(QObject):
         for event in press_events:
             self._log_debug(f"[ACT] {playback_time:.4f}s | PRESS   | {event.key_char} (Delta: {playback_time - event.time:+.4f}s)")
             if event.pitch is not None:
-                self.visualizer_updated.emit(event.pitch, True)
+                self.active_pitches.add(event.pitch)
+                state_changed = True
                 
             state = self.key_states.get(event.key_char)
             if not state or event.pitch is None: continue
@@ -306,6 +320,9 @@ class Player(QObject):
                         self.keyboard.press(base_key)
                         self._log_debug(f"      [PHYSICAL] Pressing Key '{base_key}' with modifiers {modifiers}")
             except Exception: pass
+
+        if state_changed:
+            self.visualizer_updated.emit(list(self.active_pitches))
 
     def _handle_pedal_event(self, event: KeyEvent):
         if self.stop_event.is_set(): return

@@ -110,12 +110,12 @@ class TrackSelectionDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MIDI2Key v1.3")
+        self.setWindowTitle("HuMidi v1.3")
         self.setMinimumWidth(550)
         self.setMinimumHeight(683)
         self.player_thread = None
         self.player = None
-        self.config_dir = Path.home() / ".midi2key"
+        self.config_dir = Path.home() / ".humidi"
         self.config_path = self.config_dir / "config.json"
         self.config_dir.mkdir(exist_ok=True)
         self.selected_tracks_info = None 
@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
         
         # --- GitHub Link Integration ---
         github_layout = QHBoxLayout()
-        github_label = QLabel('<a href="https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key"><span style="color: gray; text-decoration: underline;">by smyGitt on GitHub</span></a>')
+        github_label = QLabel('<a href="https://github.com/smyGitt/HuMidi-Roblox-Piano-Autoplayer"><span style="color: gray; text-decoration: underline;">by smyGitt on GitHub</span></a>')
         github_label.setOpenExternalLinks(True)
         github_layout.addStretch()
         github_layout.addWidget(github_label)
@@ -331,7 +331,7 @@ class MainWindow(QMainWindow):
         active_pitches = set()
         for note in self.current_notes:
             if note.start_time <= time < note.end_time: active_pitches.add(note.pitch)
-        self.piano_widget.set_active_pitches(active_pitches)
+        self.piano_widget.set_active_pitches(list(active_pitches))
         self._update_time_label(time, self.total_song_duration_sec)
 
     def update_progress(self, current_time):
@@ -697,7 +697,7 @@ class MainWindow(QMainWindow):
         self.player.playback_finished.connect(self.on_playback_finished)
         self.player.status_updated.connect(self.add_log_message)
         self.player.progress_updated.connect(self.update_progress)
-        self.player.visualizer_updated.connect(self.piano_widget.set_pitch_active)
+        self.player.visualizer_updated.connect(self.piano_widget.set_active_pitches)
         self.player.auto_paused.connect(self._on_auto_paused)
         self.player_thread.start()
 
