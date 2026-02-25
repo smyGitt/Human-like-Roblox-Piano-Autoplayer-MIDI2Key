@@ -1126,7 +1126,7 @@ class MainWindow(QMainWindow):
         self.player.playback_finished.connect(self.on_playback_finished)
         self.player.status_updated.connect(self.add_log_message)
         self.player.progress_updated.connect(self.update_progress)
-        self.player.visualizer_updated.connect(self.piano_widget.set_pitch_active)
+        self.player.visualizer_updated.connect(self.piano_widget.set_active_pitches)
         self.player_thread.start()
 
     def handle_stop(self):

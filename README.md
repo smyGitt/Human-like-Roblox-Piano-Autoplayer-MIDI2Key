@@ -1,5 +1,5 @@
 # Jukebox
-Based on [MIDI2Key](https://github.com/smyGitt/Human-like-Roblox-Piano-Autoplayer-MIDI2Key/tree/01e55a2652752e727ea99dabcc01e50b83f6f97d) and [RobloxMidiConnect](https://github.com/LordHenryVonHenry/RobloxMidiConnect/tree/65add6ac227336af726fe2d442c172e5fd51f638) 
+Based on [HuMidi](https://github.com/smyGitt/HuMidi-Roblox-Piano-Autoplayer) and [RobloxMidiConnect](https://github.com/LordHenryVonHenry/RobloxMidiConnect/tree/65add6ac227336af726fe2d442c172e5fd51f638) 
 
 MIDI to Roblox Piano !  
 

@@ -161,7 +161,8 @@ class Player(QObject):
     status_updated = Signal(str)
     progress_updated = Signal(float)
     playback_finished = Signal()
-    visualizer_updated = Signal(int, bool)
+    # Emits the full set of currently active MIDI pitches whenever it changes.
+    visualizer_updated = Signal(list)
     auto_paused = Signal()
 
     def __init__(self, compiled_events: List[KeyEvent],
@@ -181,6 +182,10 @@ class Player(QObject):
         self.total_paused_time = 0.0
         self._pause_ts = 0.0
         self._pending_shutdown = False
+
+        # Track currently active MIDI pitches for the visualizer; updated in
+        # batches and emitted as a list via visualizer_updated.
+        self._active_pitches: Set[int] = set()
 
     # -- public API (called from main thread) --
 
@@ -329,16 +334,25 @@ class Player(QObject):
             else:
                 self.backend.pedal_off()
 
+        state_changed = False
+
         for e in releases:
             if self.stop_event.is_set():
                 return
             if e.pitch is not None:
                 self.backend.note_off(e.pitch)
-                self.visualizer_updated.emit(e.pitch, False)
+                if e.pitch in self._active_pitches:
+                    self._active_pitches.discard(e.pitch)
+                    state_changed = True
 
         for e in presses:
             if self.stop_event.is_set():
                 return
             if e.pitch is not None:
                 self.backend.note_on(e.pitch, e.velocity)
-                self.visualizer_updated.emit(e.pitch, True)
+                if e.pitch not in self._active_pitches:
+                    self._active_pitches.add(e.pitch)
+                    state_changed = True
+
+        if state_changed:
+            self.visualizer_updated.emit(list(self._active_pitches))

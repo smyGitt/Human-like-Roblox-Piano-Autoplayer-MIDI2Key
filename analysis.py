@@ -255,8 +255,8 @@ class PedalGenerator:
             if not bass_notes:
                 treble_notes = [n for n in final_notes if n.hand == 'right']
                 treble_notes.sort(key=lambda n: n.start_time)
-                return PedalGenerator._generate_adaptive_pedal_driver(treble_notes)
-            return PedalGenerator._generate_adaptive_pedal_driver(bass_notes)
+                return PedalGenerator._generate_adaptive_pedal_driver(treble_notes, final_notes)
+            return PedalGenerator._generate_adaptive_pedal_driver(bass_notes, final_notes)
             
         for section in sections:
             lh_notes = [n for n in section.notes if n.hand == 'left']
@@ -280,9 +280,10 @@ class PedalGenerator:
         return events
 
     @staticmethod
-    def _generate_adaptive_pedal_driver(driver_notes: List[Note]) -> List[KeyEvent]:
-        events = []
-        if not driver_notes: return events
+    def _generate_adaptive_pedal_driver(driver_notes: List[Note], all_notes: List[Note]) -> List[KeyEvent]:
+        events: List[KeyEvent] = []
+        if not driver_notes:
+            return events
 
         PEDAL_LAG = 0.05   # Seconds between pedal up and down when repedaling.
         SAFE_INTERVALS = {0, 3, 4, 5, 7}   # Unison, m3, M3, P4, P5, octave; keep pedal.
@@ -290,35 +291,46 @@ class PedalGenerator:
 
         for i in range(len(driver_notes)):
             curr = driver_notes[i]
-            next_n = driver_notes[i+1] if i < len(driver_notes) - 1 else None
-            
+            next_n = driver_notes[i + 1] if i < len(driver_notes) - 1 else None
+
             if i == 0:
                 events.append(KeyEvent(curr.start_time, 1, 'pedal', 'down'))
-            
+
             gap = 0.0
             if next_n:
                 gap = next_n.start_time - curr.end_time
-            
-            if gap > 0.35: 
+
+            if gap > 0.35:
                 events.append(KeyEvent(curr.end_time, 0, 'pedal', 'up'))
-                if next_n: 
+                if next_n:
                     events.append(KeyEvent(next_n.start_time, 1, 'pedal', 'down'))
             else:
                 should_repedal = False
 
                 if next_n:
-                    interval = abs(next_n.pitch - curr.pitch) % 12
-                    if interval in SAFE_INTERVALS:
-                        should_repedal = False   # Consonant; keep pedal.
-                    elif interval in UNSAFE_INTERVALS:
-                        should_repedal = True    # Dissonant; repedal.
-                    else:
-                        should_repedal = False   # Gray area; assume safe.
-                
+                    # 1. Linear harmonic check between successive driver notes.
+                    linear_interval = abs(next_n.pitch - curr.pitch) % 12
+                    if linear_interval in UNSAFE_INTERVALS:
+                        should_repedal = True
+
+                    # 2. Vertical harmonic check using all notes near the next driver note.
+                    if not should_repedal and all_notes:
+                        window_notes = [
+                            n for n in all_notes
+                            if abs(n.start_time - next_n.start_time) <= 0.05
+                        ]
+                        if window_notes:
+                            lowest_pitch = min(n.pitch for n in window_notes)
+                            for n in window_notes:
+                                interval = abs(n.pitch - lowest_pitch) % 12
+                                if interval in UNSAFE_INTERVALS:
+                                    should_repedal = True
+                                    break
+
                 if should_repedal and next_n:
                     events.append(KeyEvent(next_n.start_time, 0, 'pedal', 'up'))
                     events.append(KeyEvent(next_n.start_time + PEDAL_LAG, 1, 'pedal', 'down'))
-                    
+
         final_end = max(n.end_time for n in driver_notes)
         events.append(KeyEvent(final_end, 0, 'pedal', 'up'))
         return events

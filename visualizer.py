@@ -2,8 +2,8 @@
 
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal as Signal
-from PyQt6.QtGui import QPainter, QBrush, QColor, QPen
-from typing import List, Set
+from PyQt6.QtGui import QPainter, QBrush, QColor, QPen, QPixmap
+from typing import List
 from models import Note
 from core import TempoMap
 
@@ -22,11 +22,14 @@ class PianoWidget(QWidget):
         self.black_keys = {1, 3, 6, 8, 10}   # Semitones that are black keys (mod 12) 
 
     def set_pitch_active(self, pitch: int, active: bool):
-        if active: self.active_pitches.add(pitch)
-        else: self.active_pitches.discard(pitch)
-        
-    def set_active_pitches(self, pitches: Set[int]):
-        self.active_pitches = pitches
+        if active:
+            self.active_pitches.add(pitch)
+        else:
+            self.active_pitches.discard(pitch)
+
+    def set_active_pitches(self, pitches) -> None:
+        """Replace active pitches from an iterable of MIDI note numbers."""
+        self.active_pitches = set(pitches)
         self.update()
         
     def clear(self):
@@ -101,6 +104,10 @@ class TimelineWidget(QWidget):
         self.cursor_color = QColor(255, 255, 255)
         self.measure_line_color = QColor(255, 255, 255, 50)
 
+        # Cached background pixmap (notes + measure lines) to avoid redrawing
+        # the entire roll every paint; only rebuilt when size or data changes.
+        self._cached_background: QPixmap | None = None
+
     def set_data(self, notes: List[Note], duration: float, tempo_map: TempoMap = None):
         """Set notes and duration; cache measure boundaries from tempo_map for paint."""
         self.notes = notes
@@ -113,17 +120,23 @@ class TimelineWidget(QWidget):
                 self._cached_boundaries = self.tempo_map.get_measure_boundaries(self.total_duration)
             except Exception:
                 self._cached_boundaries = None
-        
+
         new_width = int(self.total_duration * self.pixels_per_second)
         new_width = max(new_width, 800)
         self.setFixedWidth(new_width)
         self.current_time = 0.0
+        self._cached_background = None
         self.update()
 
     def set_position(self, time: float):
         if not self.is_dragging:
             self.current_time = time
             self.update()
+
+    def resizeEvent(self, event):
+        # Any size change invalidates the cached pixmap.
+        self._cached_background = None
+        super().resizeEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -145,45 +158,72 @@ class TimelineWidget(QWidget):
         self.scrub_position_changed.emit(self.current_time)
         self.update()
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
+    def _ensure_background(self):
+        """Rebuild the cached background pixmap if needed."""
+        if self._cached_background is not None and self._cached_background.size() == self.size():
+            return
+
+        if self.width() <= 0 or self.height() <= 0:
+            self._cached_background = None
+            return
+
+        self._cached_background = QPixmap(self.size())
+        self._cached_background.fill(self.bg_color)
+
+        painter = QPainter(self._cached_background)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        painter.fillRect(self.rect(), self.bg_color)
-        
+
         w = self.width()
         h = self.height()
-        
+
+        # Measure lines.
         if self._cached_boundaries:
             painter.setPen(QPen(self.measure_line_color, 1))
             for start_t, end_t in self._cached_boundaries:
                 x = (start_t / self.total_duration) * w
                 painter.drawLine(QPointF(x, 0), QPointF(x, h))
 
+        # Note rectangles.
         if self.notes:
             min_p = 21
             max_p = 108
             range_p = max_p - min_p
-            
+
             painter.setPen(Qt.PenStyle.NoPen)
-            
+
             for note in self.notes:
                 nx = (note.start_time / self.total_duration) * w
                 nw = (note.duration / self.total_duration) * w
                 nw = max(1.0, nw)
-                
+
                 ny_ratio = 1.0 - ((note.pitch - min_p) / range_p)
                 ny = ny_ratio * (h - 10) + 5
-                nh = 8 
-                
+                nh = 8
+
                 if note.hand == 'left':
                     painter.setBrush(QBrush(self.left_hand_color))
                 elif note.hand == 'right':
                     painter.setBrush(QBrush(self.right_hand_color))
                 else:
                     painter.setBrush(QBrush(self.unknown_color))
-                
+
                 painter.drawRect(QRectF(nx, ny, nw, nh))
+
+        painter.end()
+
+    def paintEvent(self, event):
+        self._ensure_background()
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if self._cached_background is not None:
+            painter.drawPixmap(0, 0, self._cached_background)
+        else:
+            painter.fillRect(self.rect(), self.bg_color)
+
+        w = self.width()
+        h = self.height()
 
         cx = (self.current_time / self.total_duration) * w
         painter.setPen(QPen(self.cursor_color, 2))
