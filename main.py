@@ -139,7 +139,14 @@ class TrackSelectionDialog(QDialog):
             check_item.setCheckState(check_state)
             self.table.setItem(i, 0, check_item)
             self.checkboxes.append(check_item)
-            self.table.setItem(i, 1, QTableWidgetItem(track.name))
+
+            # Use an emoji-capable font for track names.
+            name_item = QTableWidgetItem(track.name)
+            name_font = name_item.font()
+            name_font.setFamily("Segoe UI Emoji")
+            name_item.setFont(name_font)
+            self.table.setItem(i, 1, name_item)
+
             self.table.setItem(i, 2, QTableWidgetItem(track.instrument_name))
             self.table.setItem(i, 3, QTableWidgetItem(str(track.note_count)))
             combo = QComboBox()
