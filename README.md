@@ -36,12 +36,16 @@ this will show you all the available flags and formatting. Though I can't guaran
 Remember that it accepts .mid files only. it works best with piano-only .mid, but I've seen it work with mixed instruments.
 
 # Dependencies
-you might need to install a few python libraries though. You will see that main.py imports various libraries.
+If you chose to not trust me (not judging) and did not want to use the `exe` in the releases, you might need to install a few python libraries. You will see that `main.py` and other `.py` files import various libraries. You can't run this application without downloading all of them. Some (not all) are:
 
     import mido, time, headpq, threading, random, copy, numpy, sys, dataclasses, import, collections, os, PyQt6  
 
-and it may differ between the .py files. Please check if you have these installed.
+and there may be more for the other `.py` files. Please check if you have every one of these libraries installed.
 
 if you get some warning about pyinstaller not being compatible with some module, like `typing`, then just uninstall it with 
 
+    pip uninstall <MODULE NAME>
+    
+  or
+  
     python -m pip uninstall <MODULE NAME>
